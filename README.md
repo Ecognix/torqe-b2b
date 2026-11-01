@@ -4,7 +4,7 @@ The Console is an independent Next.js application. Deploy this folder as its own
 
 ## Invite-only access
 
-Set `CONSOLE_INVITE_CODE` to a high-entropy invitation code and `CONSOLE_SESSION_SECRET` to a separate random value of at least 32 characters in the server environment. The access endpoint compares codes in constant time and issues an eight-hour, HTTP-only, same-site cookie. Do not prefix either value with `NEXT_PUBLIC_`. Rotate the invite code to revoke future access; existing sessions expire within eight hours.
+Set `CONSOLE_INVITE_CODE` to a high-entropy invitation code and `CONSOLE_SESSION_SECRET` to a separate random value of at least 32 characters in the server environment. In Vercel, add both variables to the Console project's **Production** environment (and Preview too, if using preview deployments), then redeploy so the functions receive them. The invitation code entered on the login page must exactly match `CONSOLE_INVITE_CODE`; the local preview code is not automatically configured in Vercel. The access endpoint compares codes in constant time and issues an eight-hour, HTTP-only, same-site cookie. Do not prefix either value with `NEXT_PUBLIC_`. Rotate the invite code to revoke future access; existing sessions expire within eight hours.
 
 ## Supabase
 

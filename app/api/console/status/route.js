@@ -17,7 +17,7 @@ function isAuthorized(token, secret) {
 
 export async function GET() {
   const cookieStore = await cookies();
-  if (!isAuthorized(cookieStore.get("torqe_console_access")?.value, process.env.CONSOLE_SESSION_SECRET)) {
+  if (!isAuthorized(cookieStore.get("torqe_console_access")?.value, process.env.CONSOLE_SESSION_SECRET?.trim())) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
 

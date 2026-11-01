@@ -31,11 +31,13 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const inviteCode = process.env.CONSOLE_INVITE_CODE;
-  const secret = process.env.CONSOLE_SESSION_SECRET;
+  const inviteCode = process.env.CONSOLE_INVITE_CODE?.trim();
+  const secret = process.env.CONSOLE_SESSION_SECRET?.trim();
 
   if (!inviteCode || !secret || secret.length < 32) {
-    return NextResponse.json({ error: "Console access is not configured. Ask your Torqe workspace administrator for an invitation." }, { status: 503 });
+    return NextResponse.json({
+      error: "Console invitations are not configured for this deployment. Set CONSOLE_INVITE_CODE and a CONSOLE_SESSION_SECRET of at least 32 characters in Vercel for this environment, then redeploy.",
+    }, { status: 503 });
   }
 
   let body;
@@ -45,7 +47,7 @@ export async function POST(request) {
     return NextResponse.json({ error: "Enter a valid invitation code." }, { status: 400 });
   }
 
-  const submitted = typeof body?.code === "string" ? Buffer.from(body.code) : Buffer.alloc(0);
+  const submitted = typeof body?.code === "string" ? Buffer.from(body.code.trim()) : Buffer.alloc(0);
   const expected = Buffer.from(inviteCode);
   if (submitted.length !== expected.length || !timingSafeEqual(submitted, expected)) {
     return NextResponse.json({ error: "That invitation code is not valid." }, { status: 401 });
