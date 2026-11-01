@@ -1,6 +1,6 @@
 # Torqe Console
 
-The Console is an independent Next.js application. Deploy this folder as its own repository and map the deployment to `console.torqe.ai`. The landing site's Console menu item links to that subdomain. Its command-center UI currently uses clearly identified sample data; external messages, approvals, and integrations are not executed from the preview workspace. Knowledge-file selections and saved agent instructions are browser-local preview state; files are not uploaded or synchronized.
+The Console is an independent Next.js application in the `Ecognix/torqe-b2b` repository, deployed at `https://torqe-console.vercel.app`. The Torqe landing site's Console menu item links to this deployment. Its command-center UI currently uses clearly identified sample data; external messages, approvals, and integrations are not executed from the preview workspace. Knowledge-file selections and saved agent instructions are browser-local preview state; files are not uploaded or synchronized.
 
 ## Invite-only access
 
