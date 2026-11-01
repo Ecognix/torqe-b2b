@@ -13,7 +13,7 @@ function getSessionToken(secret, expiresAt) {
 }
 
 function isAuthorized(request) {
-  const secret = process.env.CONSOLE_SESSION_SECRET;
+  const secret = process.env.CONSOLE_SESSION_SECRET?.trim();
   const token = request.cookies.get(COOKIE_NAME)?.value;
   if (!secret || !token) return false;
 
