@@ -123,7 +123,7 @@ function splitSuggestions(text) {
   };
 }
 
-export default function TorqeChat({ endpoint = "/api/chat", variant = "page", onClose, suggestions = SUGGESTIONS }) {
+export default function TorqeChat({ endpoint = "/api/chat", variant = "page", onClose, suggestions = SUGGESTIONS, requestContext = {} }) {
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [storageReady, setStorageReady] = useState(false);
@@ -241,7 +241,7 @@ export default function TorqeChat({ endpoint = "/api/chat", variant = "page", on
     replyRef.current = { sessionId, replyId: reply.id };
     try {
       const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.signal,
-        body: JSON.stringify({ messages: history.map(({ role, content, images: im }) => ({ role, content, ...(im?.length ? { images: im } : {}) })) }) });
+        body: JSON.stringify({ ...requestContext, messages: history.map(({ role, content, images: im }) => ({ role, content, ...(im?.length ? { images: im } : {}) })) }) });
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || "Something went wrong. Please try again."); }
       const contentType = res.headers.get("content-type") || "";
       let answer;

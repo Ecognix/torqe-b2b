@@ -1,30 +1,41 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createSupabaseServerClient } from "../../../../lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function isAuthorized(token, secret) {
-  if (!token || !secret) return false;
-  const [expiresAt, signature] = token.split(".");
-  if (!expiresAt || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) < Math.floor(Date.now() / 1000)) return false;
-  const expected = createHmac("sha256", secret).update(`console:${expiresAt}`).digest("hex");
-  const actualBytes = Buffer.from(signature, "hex");
-  const expectedBytes = Buffer.from(expected, "hex");
-  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
-}
-
 export async function GET() {
-  const cookieStore = await cookies();
-  if (!isAuthorized(cookieStore.get("torqe_console_access")?.value, process.env.CONSOLE_SESSION_SECRET?.trim())) {
+  let supabase;
+  try {
+    supabase = await createSupabaseServerClient();
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 503 });
+  }
+
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
 
-  const supabaseConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+  const { data: memberships, error: membershipError } = await supabase
+    .from("organization_members")
+    .select("organization_id, role, organizations!inner(id, name)")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+
+  if (membershipError) {
+    console.error("Could not load Console workspaces:", membershipError.message);
+    return NextResponse.json({ error: "Could not load your workspaces." }, { status: 500 });
+  }
+
   return NextResponse.json({
-    supabase: { configured: supabaseConfigured },
+    user: { id: user.id, email: user.email, name: user.user_metadata?.full_name || "" },
+    workspaces: (memberships || []).map((membership) => ({
+      id: membership.organizations.id,
+      name: membership.organizations.name,
+      role: membership.role,
+    })),
+    supabase: { configured: true },
     model: { configured: Boolean(process.env.NVIDIA_API_KEY) },
-    workspace: "Torqe preview workspace",
-  });
+  }, { headers: { "Cache-Control": "no-store" } });
 }

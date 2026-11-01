@@ -1,72 +1,71 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { createSupabaseServerClient } from "../../../../lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const COOKIE_NAME = "torqe_console_access";
-const SESSION_SECONDS = 60 * 60 * 8;
+export async function GET() {
+  let supabase;
+  try {
+    supabase = await createSupabaseServerClient();
+  } catch (error) {
+    return NextResponse.json({ authorized: false, error: error.message }, { status: 503 });
+  }
 
-function getSessionToken(secret, expiresAt) {
-  const signature = createHmac("sha256", secret).update(`console:${expiresAt}`).digest("hex");
-  return `${expiresAt}.${signature}`;
-}
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error) {
+    if (error.name !== "AuthSessionMissingError") {
+      console.error("Could not verify the Console session:", error.message);
+      return NextResponse.json({ authorized: false, error: "Could not verify your session. Please try again." }, { status: 503 });
+    }
+  }
 
-function isAuthorized(request) {
-  const secret = process.env.CONSOLE_SESSION_SECRET?.trim();
-  const token = request.cookies.get(COOKIE_NAME)?.value;
-  if (!secret || !token) return false;
-
-  const [expiresAt, signature] = token.split(".");
-  if (!expiresAt || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) < Math.floor(Date.now() / 1000)) return false;
-
-  const expected = getSessionToken(secret, expiresAt).split(".")[1];
-  const actualBytes = Buffer.from(signature, "hex");
-  const expectedBytes = Buffer.from(expected, "hex");
-  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
-}
-
-export async function GET(request) {
-  return NextResponse.json({ authorized: isAuthorized(request) });
+  return NextResponse.json({ authorized: Boolean(user), user: user ? { id: user.id, email: user.email } : null });
 }
 
 export async function POST(request) {
-  const inviteCode = process.env.CONSOLE_INVITE_CODE?.trim();
-  const secret = process.env.CONSOLE_SESSION_SECRET?.trim();
-
-  if (!inviteCode || !secret || secret.length < 32) {
-    return NextResponse.json({
-      error: "Console invitations are not configured for this deployment. Set CONSOLE_INVITE_CODE and a CONSOLE_SESSION_SECRET of at least 32 characters in Vercel for this environment, then redeploy.",
-    }, { status: 503 });
-  }
-
   let body;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: "Enter a valid invitation code." }, { status: 400 });
+    return NextResponse.json({ error: "Enter your invitation email and password." }, { status: 400 });
   }
 
-  const submitted = typeof body?.code === "string" ? Buffer.from(body.code.trim()) : Buffer.alloc(0);
-  const expected = Buffer.from(inviteCode);
-  if (submitted.length !== expected.length || !timingSafeEqual(submitted, expected)) {
-    return NextResponse.json({ error: "That invitation code is not valid." }, { status: 401 });
+  const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  const password = typeof body?.password === "string" ? body.password : "";
+  if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8 || password.length > 256) {
+    return NextResponse.json({ error: "Enter a valid email address and password." }, { status: 400 });
   }
 
-  const expiresAt = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
-  const response = NextResponse.json({ authorized: true });
-  response.cookies.set(COOKIE_NAME, getSessionToken(secret, expiresAt), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    path: "/",
-    maxAge: SESSION_SECONDS,
-  });
-  return response;
+  let supabase;
+  try {
+    supabase = await createSupabaseServerClient();
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 503 });
+  }
+
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) {
+    console.warn("Console sign-in was rejected:", error.message);
+    return NextResponse.json({ error: "Sign-in failed. Check your credentials and accept your workspace invitation first." }, { status: 401 });
+  }
+
+  return NextResponse.json({ authorized: true });
 }
 
 export async function DELETE() {
-  const response = NextResponse.json({ authorized: false });
-  response.cookies.set(COOKIE_NAME, "", { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", path: "/", maxAge: 0 });
-  return response;
+  let supabase;
+  try {
+    supabase = await createSupabaseServerClient();
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 503 });
+  }
+
+  const { error } = await supabase.auth.signOut();
+  if (error) {
+    console.error("Could not sign out of the Console:", error.message);
+    return NextResponse.json({ error: "Could not sign out. Please try again." }, { status: 503 });
+  }
+
+  return NextResponse.json({ authorized: false });
 }

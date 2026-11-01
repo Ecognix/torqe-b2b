@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Wordmark } from "../components/Logo";
 import Logo from "../components/Logo";
 import TorqeChat from "./torqe-chat/TorqeChat";
-import { activities, approvals as initialApprovals, conversations as initialConversations, integrations as initialIntegrations, navItems } from "../lib/data";
+import { integrations as integrationCatalog, navItems } from "../lib/data";
+import { AI_MODELS } from "../lib/ai/catalog";
 
 const iconPaths = {
   activity: "M3 12h4l3-8 4 16 3-8h4",
@@ -23,6 +24,7 @@ const iconPaths = {
   message: "M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z",
   more: "M12 5h.01M12 12h.01M12 19h.01",
   pause: "M7 5h3v14H7zm7 0h3v14h-3z",
+  person: "M20 21a8 8 0 0 0-16 0m8-10a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z",
   plug: "M12 22v-5m-5-4V2m10 11V2M5 7h14m-9 5h4a3 3 0 0 1 3 3v2a5 5 0 0 1-10 0v-2a3 3 0 0 1 3-3Z",
   search: "m21 21-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z",
   send: "m22 2-7 20-4-9-9-4Zm0 0L11 13",
@@ -78,57 +80,166 @@ function IntegrationLogo({ integration }) {
 }
 
 const viewTitles = {
-  overview: ["Good morning, Alex", "Here’s what’s happening across your inbound today."],
-  inbox: ["Live inbox", "Every conversation, channel, and handoff in one place."],
+  overview: ["Workspace overview", "The latest conversations, approvals, and agent activity."],
+  inbox: ["Inbox", "Review conversations, pause the agent, and prepare team replies."],
   approvals: ["Approvals", "Review the decisions that need a human in the loop."],
   activity: ["Activity log", "A clear record of every agent decision and action."],
-  automations: ["Agent controls", "Set the boundaries for what Torqe can do on its own."],
+  ai: ["AI & models", "Configure the model provider and workspace AI access."],
+  automations: ["Agent workflow", "Define the guardrails for Torqe's execution workflow."],
   knowledge: ["Knowledge base", "Ground answers in your team's trusted source material."],
-  integrations: ["Integrations", "Connect the tools and channels your team already uses."],
-  settings: ["Workspace settings", "Manage access, data connections, and workspace preferences."],
+  channels: ["Channels", "Manage messaging connections for the workspace."],
+  tools: ["Tools", "Manage the systems Torqe can use after they are securely connected."],
+  settings: ["Workspace settings", "Manage team access and workspace security."],
+  profile: ["Your profile", "Manage your account details and sign-in identity."],
 };
+
+function formatRecordTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  const elapsed = Math.max(0, Date.now() - date.getTime());
+  if (elapsed < 60_000) return "Just now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function initialsFor(name = "") {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join("") || "—";
+}
+
+function mapWorkspaceRecords(data) {
+  const messagesByConversation = new Map();
+  for (const message of [...(data.messages || [])].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))) {
+    const messages = messagesByConversation.get(message.conversation_id) || [];
+    messages.push({
+      from: message.sender_type === "prospect" ? "prospect" : message.sender_type === "system" ? "system" : message.sender_type,
+      text: message.body,
+      time: new Date(message.created_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+    });
+    messagesByConversation.set(message.conversation_id, messages);
+  }
+
+  const colors = ["lavender", "mint", "peach", "sky", "rose"];
+  const conversations = (data.conversations || []).map((conversation, index) => {
+    const metadata = conversation.metadata && typeof conversation.metadata === "object" ? conversation.metadata : {};
+    const messages = messagesByConversation.get(conversation.id) || [];
+    const name = conversation.contact_name || "Unknown contact";
+    const lastMessage = messages[messages.length - 1];
+    const channels = { whatsapp: "whatsapp", email: "gmail", linkedin: "linkedin", web: "web", other: "other" };
+    const statusLabels = { needs_review: "Needs review", active: "In progress", waiting: "Waiting on team", closed: "Closed" };
+    return {
+      id: conversation.id,
+      createdAt: conversation.created_at,
+      name,
+      company: conversation.company || "—",
+      channel: conversation.channel,
+      channelKey: channels[conversation.channel] || "other",
+      initials: initialsFor(name),
+      color: colors[index % colors.length],
+      preview: lastMessage?.text || "No messages yet.",
+      time: formatRecordTime(conversation.updated_at),
+      unread: Number.isInteger(metadata.unread_count) ? metadata.unread_count : 0,
+      status: statusLabels[conversation.status] || conversation.status,
+      intent: typeof metadata.intent === "string" ? metadata.intent : "Unclassified",
+      score: Number.isFinite(metadata.score) ? metadata.score : "—",
+      agentPaused: conversation.agent_paused,
+      messages,
+    };
+  });
+  const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+
+  const approvals = (data.approvals || []).map((approval) => {
+    const conversation = conversationById.get(approval.conversation_id);
+    const draft = approval.draft && typeof approval.draft === "object" ? approval.draft : {};
+    const person = conversation?.name || "Workspace review";
+    return {
+      id: approval.id,
+      title: approval.title,
+      person,
+      company: conversation?.company || "—",
+      type: approval.action_type,
+      time: formatRecordTime(approval.created_at),
+      risk: typeof draft.risk === "string" ? draft.risk : "Review",
+      reviewReason: [draft.rationale, draft.reason, draft.summary].find((value) => typeof value === "string" && value.trim()) || "",
+      initials: initialsFor(person),
+      status: approval.status,
+      conversationId: approval.conversation_id,
+    };
+  });
+
+  const activity = (data.activity || []).map((event) => ({
+    id: event.id,
+    title: event.action.replaceAll(".", " "),
+    detail: [event.resource_type, event.resource_id].filter(Boolean).join(" · ") || "Workspace event",
+    time: formatRecordTime(event.created_at),
+    icon: event.action.includes("approval") ? "shield" : event.action.includes("conversation") ? "message" : "activity",
+    tone: event.action.includes("approval") ? "peach" : "lavender",
+    state: "Recorded",
+  }));
+
+  return { conversations, approvals, activity, settings: data.settings, integrations: data.integrations || [], role: data.role };
+}
 
 export default function ConsoleApp() {
   const [authorized, setAuthorized] = useState(null);
-  const [accessCode, setAccessCode] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [accessError, setAccessError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [status, setStatus] = useState({ supabase: { configured: false }, model: { configured: false } });
+  const [status, setStatus] = useState({ supabase: { configured: false }, model: { configured: false }, workspaces: [] });
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [workspaceData, setWorkspaceData] = useState({ conversations: [], approvals: [], activity: [], settings: null, integrations: [], role: "" });
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState("");
   const [activePage, setActivePage] = useState("overview");
-  const [activeConversation, setActiveConversation] = useState("c1");
-  const [conversations, setConversations] = useState(initialConversations);
-  const [approvals, setApprovals] = useState(initialApprovals);
+  const [activeConversation, setActiveConversation] = useState("");
+  const conversations = workspaceData.conversations;
+  const approvals = workspaceData.approvals;
+  const activity = workspaceData.activity;
   const [autopilot, setAutopilot] = useState(false);
-  const [pausedIds, setPausedIds] = useState(new Set());
   const [search, setSearch] = useState("");
   const [inboxFilter, setInboxFilter] = useState("all");
   const [inboxChannel, setInboxChannel] = useState("all");
-  const [reply, setReply] = useState("");
   const [toast, setToast] = useState("");
   const [integrationInfo, setIntegrationInfo] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
-  const [instructions, setInstructions] = useState("You are Torqe, a thoughtful B2B sales operations agent. Be accurate, concise, and helpful. Use only approved company knowledge. Never invent pricing, legal terms, product capabilities, or customer commitments. Ask for human approval before discounts, contract changes, security exceptions, or any action with external impact.");
+  const [instructions, setInstructions] = useState("");
   const [instructionsSaved, setInstructionsSaved] = useState(false);
   const [knowledgeFiles, setKnowledgeFiles] = useState([]);
   const knowledgeInputRef = useRef(null);
-  const [range, setRange] = useState("7d");
 
   useEffect(() => {
     let active = true;
+    const url = new URL(window.location.href);
+    const authError = url.searchParams.get("authError");
+    if (authError === "setup") setAccessError("Your invitation could not be linked to a workspace. Contact your workspace administrator.");
+    if (authError === "invite") setAccessError("This invitation link is invalid or expired. Ask your workspace administrator to send a new one.");
+    if (authError) {
+      url.searchParams.delete("authError");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
     fetch("/api/console/access", { cache: "no-store" })
       .then((response) => response.json().then((data) => ({ response, data })))
-      .then(({ data }) => {
+      .then(async ({ response, data }) => {
         if (!active) return;
-        setAuthorized(Boolean(data.authorized));
+        if (!response.ok) throw new Error(data.error || "Could not verify your session.");
         if (data.authorized) {
-          fetch("/api/console/status", { cache: "no-store" })
-            .then((response) => response.ok ? response.json() : null)
-            .then((result) => { if (active && result) setStatus(result); })
-            .catch(() => { if (active) setToast("Could not check workspace connection status."); });
+          const statusResponse = await fetch("/api/console/status", { cache: "no-store" });
+          const statusResult = await statusResponse.json();
+          if (!statusResponse.ok) throw new Error(statusResult.error || "Could not load your workspace access.");
+          if (active) {
+            setStatus(statusResult);
+            setWorkspaceId(statusResult.workspaces?.[0]?.id || "");
+          }
         }
+        if (active) setAuthorized(Boolean(data.authorized));
       })
-      .catch(() => { if (active) { setAuthorized(false); setAccessError("Could not verify your invitation. Check your connection and try again."); } });
+      .catch((error) => { if (active) { setAuthorized(false); setAccessError(error.message || "Could not verify your session. Check your connection and try again."); } });
     return () => { active = false; };
   }, []);
 
@@ -139,17 +250,37 @@ export default function ConsoleApp() {
   }, [toast]);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem("torqe-console-agent-instructions");
-      if (saved) {
-        setInstructions(saved);
-        setInstructionsSaved(true);
-      }
-    } catch {
-      setInstructionsSaved(false);
-      setToast("Could not read saved instructions from this browser.");
+    if (!authorized || !workspaceId) {
+      setWorkspaceData({ conversations: [], approvals: [], activity: [], settings: null, integrations: [], role: "" });
+      return undefined;
     }
-  }, []);
+
+    let active = true;
+    setDataLoading(true);
+    setDataError("");
+    setWorkspaceData({ conversations: [], approvals: [], activity: [], settings: null, integrations: [], role: "" });
+    setActiveConversation("");
+    fetch(`/api/console/data?workspaceId=${encodeURIComponent(workspaceId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load workspace data.");
+        return data;
+      })
+      .then((data) => {
+        if (!active) return;
+        const mapped = mapWorkspaceRecords(data);
+        setWorkspaceData(mapped);
+        setAutopilot(Boolean(mapped.settings?.autopilot_enabled));
+        setInstructions(mapped.settings?.instructions || "");
+        setInstructionsSaved(true);
+        setActiveConversation(mapped.conversations[0]?.id || "");
+      })
+      .catch((error) => {
+        if (active) setDataError(error.message || "Could not load workspace data.");
+      })
+      .finally(() => { if (active) setDataLoading(false); });
+    return () => { active = false; };
+  }, [authorized, workspaceId]);
 
   const filteredConversations = useMemo(() => conversations.filter((item) => {
     const matchesSearch = `${item.name} ${item.company} ${item.preview}`.toLowerCase().includes(search.toLowerCase());
@@ -159,6 +290,7 @@ export default function ConsoleApp() {
   }), [conversations, inboxChannel, inboxFilter, search]);
   const pendingCount = approvals.filter((item) => item.status === "pending").length;
   const title = viewTitles[activePage] || viewTitles.overview;
+  const selectedWorkspace = status.workspaces?.find((workspace) => workspace.id === workspaceId);
 
   async function enterWorkspace(event) {
     event.preventDefault();
@@ -168,14 +300,17 @@ export default function ConsoleApp() {
       const response = await fetch("/api/console/access", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: accessCode }),
+        body: JSON.stringify({ email, password }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not verify that invitation.");
-      setAuthorized(true);
-      setAccessCode("");
+      if (!response.ok) throw new Error(data.error || "Could not sign in.");
+      setPassword("");
       const statusResponse = await fetch("/api/console/status", { cache: "no-store" });
-      if (statusResponse.ok) setStatus(await statusResponse.json());
+      const statusResult = await statusResponse.json();
+      if (!statusResponse.ok) throw new Error(statusResult.error || "Signed in, but could not load workspace access.");
+      setStatus(statusResult);
+      setWorkspaceId(statusResult.workspaces?.[0]?.id || "");
+      setAuthorized(true);
     } catch (error) {
       setAccessError(error.message || "Could not verify that invitation.");
     } finally {
@@ -183,9 +318,37 @@ export default function ConsoleApp() {
     }
   }
 
+  async function createWorkspace(event) {
+    event.preventDefault();
+    setCreatingWorkspace(true);
+    setDataError("");
+    try {
+      const response = await fetch("/api/console/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: workspaceName }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not create workspace.");
+      setStatus((current) => ({ ...current, workspaces: [...(current.workspaces || []), data.workspace] }));
+      setWorkspaceId(data.workspace.id);
+      setWorkspaceName("");
+    } catch (error) {
+      setDataError(error.message || "Could not create workspace.");
+    } finally {
+      setCreatingWorkspace(false);
+    }
+  }
+
   async function signOut() {
-    await fetch("/api/console/access", { method: "DELETE" });
+    const response = await fetch("/api/console/access", { method: "DELETE" });
+    if (!response.ok) {
+      showToast("Could not sign out. Please try again.");
+      return;
+    }
     setAuthorized(false);
+    setStatus({ supabase: { configured: false }, model: { configured: false }, workspaces: [] });
+    setWorkspaceId("");
     setActivePage("overview");
   }
 
@@ -193,28 +356,56 @@ export default function ConsoleApp() {
     setToast(message);
   }
 
-  function togglePause(id) {
-    setPausedIds((previous) => {
-      const next = new Set(previous);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+  async function togglePause(id) {
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation) return;
+    const response = await fetch(`/api/console/conversations/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, agent_paused: !conversation.agentPaused }),
     });
+    const data = await response.json();
+    if (!response.ok) {
+      showToast(data.error || "Could not update this conversation.");
+      return;
+    }
+    setWorkspaceData((current) => ({
+      ...current,
+      conversations: current.conversations.map((item) => item.id === id ? { ...item, agentPaused: data.conversation.agent_paused } : item),
+    }));
   }
 
-  function reviewApproval(id, nextStatus) {
-    setApprovals((items) => items.map((item) => item.id === id ? { ...item, status: nextStatus } : item));
-    showToast(nextStatus === "approved" ? "Preview: approval recorded." : "Preview: request sent back for changes.");
+  async function reviewApproval(id, nextStatus) {
+    const response = await fetch(`/api/console/approvals/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      showToast(data.error || "Could not update this approval.");
+      return;
+    }
+    setWorkspaceData((current) => ({
+      ...current,
+      approvals: current.approvals.map((item) => item.id === id ? { ...item, status: data.approval.status } : item),
+    }));
+    showToast(nextStatus === "approved" ? "Approval recorded. No external action was triggered." : "Approval decision recorded.");
   }
 
-  function sendReply(event) {
-    event.preventDefault();
-    if (!reply.trim()) return;
-    setConversations((items) => items.map((item) => item.id === activeConversation
-      ? { ...item, preview: reply.trim(), messages: [...(item.messages || []), { from: "human", text: reply.trim(), time: "Now" }] }
-      : item));
-    setReply("");
-    showToast("Preview only — connect a messaging channel to send replies.");
+  async function saveAgentSettings(updates) {
+    if (!workspaceId) return false;
+    const response = await fetch("/api/console/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, ...updates }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      showToast(data.error || "Could not save agent settings.");
+      return false;
+    }
+    return true;
   }
 
   if (authorized === null) {
@@ -229,16 +420,42 @@ export default function ConsoleApp() {
           <div className="access-symbol"><Icon name="lock" size={22} /></div>
           <p className="console-eyebrow">PRIVATE WORKSPACE</p>
           <h1>Your team, in control.</h1>
-          <p className="access-description">The Torqe Console is available to invited team members. Enter your workspace invitation to continue.</p>
+          <p className="access-description">The Torqe Console is available to invited team members. Sign in with the email address that received your workspace invitation.</p>
           <form onSubmit={enterWorkspace} className="access-form">
-            <label htmlFor="console-code">Invitation code</label>
-            <input id="console-code" type="password" autoComplete="one-time-code" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} placeholder="Enter your invitation code" required />
+            <label htmlFor="console-email">Work email</label>
+            <input id="console-email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" required />
+            <label htmlFor="console-password">Password</label>
+            <input id="console-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Your password" required />
             {accessError && <p className="access-error" role="alert">{accessError}</p>}
-            <button type="submit" className="console-primary-button access-submit" disabled={submitting}>{submitting ? "Verifying…" : "Continue"}<Icon name="arrow" size={16} /></button>
+            <button type="submit" className="console-primary-button access-submit" disabled={submitting}>{submitting ? "Signing in…" : "Sign in"}<Icon name="arrow" size={16} /></button>
           </form>
-          <div className="access-footnote"><Icon name="shield" size={15} /> Invite-only access · Sessions expire after 8 hours</div>
+          <div className="access-footnote"><Icon name="shield" size={15} /> Invite-only access · Protected by Supabase Auth</div>
         </div>
         <p className="access-help">Need access? <a href="mailto:hello@torqe.ai?subject=Torqe%20Console%20access">Ask your workspace administrator</a></p>
+        <div className="access-bottom">TORQE <span>·</span> THE INBOUND EXECUTION SYSTEM</div>
+      </div>
+    );
+  }
+
+  if (!workspaceId) {
+    return (
+      <div className="console-access">
+        <div className="access-brand"><Wordmark size={29} /><span className="access-divider" /><span className="access-console-label">Console</span></div>
+        <section className="access-card">
+          <div className="access-symbol"><Icon name="grid" size={22} /></div>
+          <p className="console-eyebrow">CREATE YOUR WORKSPACE</p>
+          <h1>Start with your team.</h1>
+          <p className="access-description">Your account is secure. Create a workspace for your organization to begin configuring Torqe.</p>
+          <form onSubmit={createWorkspace} className="access-form">
+            <label htmlFor="workspace-create-name">Workspace name</label>
+            <input id="workspace-create-name" value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="Your organization" minLength={2} maxLength={80} required />
+            {dataError && <p className="access-error" role="alert">{dataError}</p>}
+            <button type="submit" className="console-primary-button access-submit" disabled={creatingWorkspace}>{creatingWorkspace ? "Creating…" : "Create workspace"}<Icon name="arrow" size={16} /></button>
+          </form>
+          {status.workspaces?.length > 0 && <button className="access-return" onClick={() => setWorkspaceId(status.workspaces[0].id)}>Return to an existing workspace</button>}
+          <div className="access-footnote"><Icon name="shield" size={15} /> Each workspace has isolated, role-based access</div>
+        </section>
+        <button className="access-help access-signout" onClick={signOut}>Sign out</button>
         <div className="access-bottom">TORQE <span>·</span> THE INBOUND EXECUTION SYSTEM</div>
       </div>
     );
@@ -252,11 +469,17 @@ export default function ConsoleApp() {
           <span className="console-wordmark-label">CONSOLE</span>
           <button className="sidebar-close" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation"><Icon name="close" /></button>
         </div>
-        <button className="workspace-picker" onClick={() => showToast("You’re viewing the Torqe preview workspace.")}>
-          <span className="workspace-mark">T</span>
-          <span className="workspace-meta"><strong>Torqe workspace</strong><small>Internal team</small></span>
-          <Icon name="chevron" size={15} className="workspace-chevron" />
-        </button>
+        <div className="workspace-selector">
+          <button className="workspace-picker" onClick={() => setWorkspacePickerOpen((open) => !open)} aria-expanded={workspacePickerOpen}>
+            <span className="workspace-mark">{initialsFor(selectedWorkspace?.name || "T").slice(0, 1)}</span>
+            <span className="workspace-meta"><strong>{selectedWorkspace?.name || "Workspace"}</strong><small>{selectedWorkspace?.role || "Member"}</small></span>
+            <Icon name="chevron" size={15} className="workspace-chevron" />
+          </button>
+          {workspacePickerOpen && <div className="workspace-menu" role="menu">
+            {(status.workspaces || []).map((workspace) => <button key={workspace.id} role="menuitem" className={workspace.id === workspaceId ? "workspace-menu-active" : ""} onClick={() => { setWorkspaceId(workspace.id); setWorkspacePickerOpen(false); setActivePage("overview"); }}><strong>{workspace.name}</strong><small>{workspace.role}</small></button>)}
+            <button role="menuitem" className="workspace-menu-create" onClick={() => { setWorkspacePickerOpen(false); setWorkspaceId(""); }}>Create a workspace</button>
+          </div>}
+        </div>
         <nav className="console-nav" aria-label="Console navigation">
           {navItems.map((item, index) => (
             <div key={item.id}>
@@ -270,10 +493,10 @@ export default function ConsoleApp() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="workspace-health"><span className="health-dot" /><span><strong>Preview workspace</strong><small>Sample data · No live actions</small></span><span className="health-info" title="Connect Supabase and your channels to load live data">i</span></div>
-          <button className="sidebar-user" onClick={() => setActivePage("settings")}>
-            <Avatar initials="AT" color="charcoal" small />
-            <span className="user-meta"><strong>Alex Taylor</strong><small>Workspace admin</small></span>
+          <div className="workspace-health"><span className="health-dot" /><span><strong>{dataLoading ? "Syncing workspace" : "Workspace connected"}</strong><small>{dataError ? "Data could not be loaded" : "Private · role protected"}</small></span><span className="health-info" title={dataError || "Workspace data is protected by Supabase row-level security."}>i</span></div>
+          <button className="sidebar-user" onClick={() => setActivePage("profile")}>
+            <Avatar initials={initialsFor(status.user?.name || status.user?.email || "User")} color="charcoal" small />
+            <span className="user-meta"><strong>{status.user?.name || status.user?.email || "Account"}</strong><small>{workspaceData.role || selectedWorkspace?.role || "Member"} · Profile</small></span>
             <Icon name="more" size={18} />
           </button>
         </div>
@@ -284,12 +507,12 @@ export default function ConsoleApp() {
       <main className="console-main">
         <header className="console-topbar">
           <button className="mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Icon name="menu" /></button>
-          <div className="breadcrumb"><span>Torqe workspace</span><Icon name="chevron" size={14} /><strong>{navItems.find((item) => item.id === activePage)?.label || "Overview"}</strong></div>
+          <div className="breadcrumb"><span>{selectedWorkspace?.name || "Workspace"}</span><Icon name="chevron" size={14} /><strong>{navItems.find((item) => item.id === activePage)?.label || "Overview"}</strong></div>
           <div className="topbar-actions">
-            <span className="topbar-live"><i /> PREVIEW</span>
+            <span className="topbar-live"><i /> WORKSPACE DATA</span>
             <button className="topbar-icon-button notification-button" aria-label="Notifications" onClick={() => setActivePage("approvals")}><Icon name="bell" size={18} /><i /></button>
             <span className="topbar-separator" />
-            <button className={`autopilot-control ${autopilot ? "autopilot-enabled" : ""}`} onClick={() => { setAutopilot((enabled) => !enabled); showToast("Preview control changed. Live agent execution is not connected."); }} aria-pressed={autopilot}>
+            <button className={`autopilot-control ${autopilot ? "autopilot-enabled" : ""}`} onClick={async () => { const next = !autopilot; if (await saveAgentSettings({ autopilot_enabled: next })) setAutopilot(next); }} aria-pressed={autopilot}>
               <span className="autopilot-indicator" />
               <span>Autopilot <strong>{autopilot ? "On" : "Off"}</strong></span>
               <span className="switch-track"><i /></span>
@@ -299,80 +522,87 @@ export default function ConsoleApp() {
         </header>
 
         <div className="console-content">
+          {dataError && <div className="integration-notice" role="alert"><span><Icon name="shield" size={18} /></span><p><strong>Workspace data could not be loaded.</strong> {dataError}</p></div>}
           <div className="page-heading">
-            <div className="page-heading-copy"><p className="console-eyebrow">YOUR TORQE WORKSPACE</p><h1>{activePage === "overview" ? <>Good morning, <span className="hero-accent">Alex.</span></> : title[0]}</h1><p>{title[1]}</p></div>
+            <div className="page-heading-copy"><p className="console-eyebrow">YOUR TORQE WORKSPACE</p><h1>{activePage === "overview" ? <>Welcome to <span className="hero-accent">{selectedWorkspace?.name || "Torqe"}.</span></> : title[0]}</h1><p>{title[1]}</p></div>
             <div className="page-heading-actions">
-              {activePage === "overview" && <button className="console-secondary-button" onClick={() => exportCsv("torqe-workspace-preview.csv", [["Metric", "Value"], ["Conversations today", "128"], ["Autonomously resolved", "84%"], ["Meetings booked", "16"], ["Awaiting approval", String(pendingCount)]])}><Icon name="download" size={16} /> Export report</button>}
+              {activePage === "overview" && <button className="console-secondary-button" onClick={() => exportCsv("torqe-workspace-report.csv", [["Metric", "Value"], ["Conversations", String(conversations.length)], ["Pending approvals", String(pendingCount)], ["Activity events", String(activity.length)]])}><Icon name="download" size={16} /> Export report</button>}
               <button className="console-primary-button" onClick={() => setAssistantOpen(true)}><Logo size={17} white spin /> Ask Torqe</button>
             </div>
           </div>
 
-          {activePage === "overview" && <OverviewPage setActivePage={setActivePage} approvals={approvals} autopilot={autopilot} status={status} showToast={showToast} range={range} setRange={setRange} />}
-          {activePage === "inbox" && <InboxPage conversations={filteredConversations} activeConversation={activeConversation} setActiveConversation={setActiveConversation} pausedIds={pausedIds} togglePause={togglePause} search={search} setSearch={setSearch} reply={reply} setReply={setReply} sendReply={sendReply} showToast={showToast} inboxFilter={inboxFilter} setInboxFilter={setInboxFilter} inboxChannel={inboxChannel} setInboxChannel={setInboxChannel} />}
+          {activePage === "overview" && <OverviewPage setActivePage={setActivePage} approvals={approvals} conversations={conversations} activity={activity} autopilot={autopilot} status={status} />}
+          {activePage === "inbox" && <InboxPage workspaceId={workspaceId} conversations={filteredConversations} activeConversation={activeConversation} setActiveConversation={setActiveConversation} togglePause={togglePause} search={search} setSearch={setSearch} inboxFilter={inboxFilter} setInboxFilter={setInboxFilter} inboxChannel={inboxChannel} setInboxChannel={setInboxChannel} />}
           {activePage === "approvals" && <ApprovalsPage approvals={approvals} reviewApproval={reviewApproval} setActivePage={setActivePage} setActiveConversation={setActiveConversation} />}
-          {activePage === "activity" && <ActivityPage />}
-          {activePage === "automations" && <AutomationsPage autopilot={autopilot} setAutopilot={setAutopilot} instructions={instructions} setInstructions={(value) => { setInstructions(value); setInstructionsSaved(false); }} instructionsSaved={instructionsSaved} saveInstructions={() => { try { window.localStorage.setItem("torqe-console-agent-instructions", instructions); setInstructionsSaved(true); showToast("Instructions saved in this browser preview."); } catch { showToast("Could not save instructions in this browser."); } }} />}
-          {activePage === "knowledge" && <KnowledgePage status={status} showToast={showToast} knowledgeFiles={knowledgeFiles} inputRef={knowledgeInputRef} onFilesSelected={(files) => { setKnowledgeFiles((current) => [...new Set([...current, ...files.map((file) => file.name)])]); if (files.length) showToast(`${files.length} document${files.length === 1 ? "" : "s"} added to this browser preview. Connect Supabase to ingest them.`); }} />}
-          {activePage === "integrations" && <IntegrationsPage status={status} setIntegrationInfo={setIntegrationInfo} />}
-          {activePage === "settings" && <SettingsPage status={status} showToast={showToast} />}
-          <footer className="console-footer"><span>TORQE CONSOLE <span className="footer-dot">·</span> PRIVATE PREVIEW</span><span>Your team's operations, made visible.</span></footer>
+          {activePage === "activity" && <ActivityPage entries={activity} />}
+          {activePage === "automations" && <AutomationsPage autopilot={autopilot} setAutopilot={async (change) => { const next = typeof change === "function" ? change(autopilot) : change; if (await saveAgentSettings({ autopilot_enabled: next })) setAutopilot(next); }} instructions={instructions} setInstructions={(value) => { setInstructions(value); setInstructionsSaved(false); }} instructionsSaved={instructionsSaved} saveInstructions={async () => { if (await saveAgentSettings({ instructions })) { setInstructionsSaved(true); showToast("Agent instructions saved to this workspace."); } }} />}
+          {activePage === "knowledge" && <KnowledgePage status={status} showToast={showToast} knowledgeFiles={knowledgeFiles} inputRef={knowledgeInputRef} onFilesSelected={(files) => { setKnowledgeFiles((current) => [...new Set([...current, ...files.map((file) => file.name)])]); if (files.length) showToast(`${files.length} document${files.length === 1 ? "" : "s"} selected. Upload and ingestion are not implemented yet.`); }} />}
+          {activePage === "ai" && <AISettingsPage workspaceId={workspaceId} role={workspaceData.role || selectedWorkspace?.role} showToast={showToast} />}
+          {activePage === "channels" && <ConnectionsPage category="CHANNEL" status={status} setIntegrationInfo={setIntegrationInfo} integrations={workspaceData.integrations} />}
+          {activePage === "tools" && <ConnectionsPage category="TOOL" status={status} setIntegrationInfo={setIntegrationInfo} integrations={workspaceData.integrations} />}
+          {activePage === "settings" && <SettingsPage status={status} showToast={showToast} workspace={selectedWorkspace} workspaceId={workspaceId} role={workspaceData.role || selectedWorkspace?.role} />}
+          {activePage === "profile" && <ProfilePage user={status.user} onUpdated={(name) => setStatus((current) => ({ ...current, user: { ...current.user, name } }))} showToast={showToast} />}
+          <footer className="console-footer"><span>TORQE CONSOLE <span className="footer-dot">·</span> PRIVATE WORKSPACE</span><span>Your team's operations, made visible.</span></footer>
         </div>
       </main>
 
-      {assistantOpen && <div className="assistant-overlay"><button className="assistant-backdrop" onClick={() => setAssistantOpen(false)} aria-label="Close assistant" /><div className="tcw-panel console-chat-panel"><TorqeChat endpoint="/api/console/copilot" variant="widget" onClose={() => setAssistantOpen(false)} /></div></div>}
+      {assistantOpen && <div className="assistant-overlay"><button className="assistant-backdrop" onClick={() => setAssistantOpen(false)} aria-label="Close assistant" /><div className="tcw-panel console-chat-panel"><TorqeChat endpoint="/api/console/copilot" variant="widget" onClose={() => setAssistantOpen(false)} requestContext={{ workspaceId }} /></div></div>}
       {integrationInfo && <IntegrationDialog integration={integrationInfo} onClose={() => setIntegrationInfo(null)} />}
       {toast && <div role="status" className="console-toast"><Icon name="shield" size={17} />{toast}</div>}
     </div>
   );
 }
 
-function OverviewPage({ setActivePage, approvals, autopilot, status, showToast, range, setRange }) {
+function OverviewPage({ setActivePage, approvals, conversations, activity, autopilot, status }) {
   const outstanding = approvals.filter((item) => item.status === "pending");
-  const periods = {
-    "7d": { label: "Last 7 days", total: "1,284", change: "18.6%", days: [["Mon",46,34],["Tue",62,42],["Wed",54,39],["Thu",78,55],["Fri",66,49],["Sat",36,27],["Sun",48,34]] },
-    "30d": { label: "Last 30 days", total: "4,892", change: "12.4%", days: [["W1",52,40],["W2",67,49],["W3",59,45],["W4",84,62],["W5",69,51],["W6",42,32],["W7",57,41]] },
-    "90d": { label: "Last 90 days", total: "14,608", change: "24.1%", days: [["Aug",43,33],["Sep",61,46],["Oct",76,56],["Nov",68,51],["Dec",81,61],["Jan",72,54],["Feb",92,68]] },
-  };
-  const period = periods[range];
+  const today = new Date();
+  const todayCount = conversations.filter((conversation) => conversation.createdAt && new Date(conversation.createdAt).toDateString() === today.toDateString()).length;
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date();
+    date.setDate(date.getDate() - (6 - index));
+    const count = conversations.filter((conversation) => conversation.createdAt && new Date(conversation.createdAt).toDateString() === date.toDateString()).length;
+    return { label: date.toLocaleDateString(undefined, { weekday: "short" }), count };
+  });
+  const maxCount = Math.max(...days.map((day) => day.count), 1);
   return (
     <>
-      <div className="overview-callout"><span className="callout-icon"><Icon name="spark" size={17} /></span><span><strong>Preview workspace.</strong> These are sample conversations. Connect your systems to bring your real operation into Torqe.</span><button onClick={() => setActivePage("integrations")}>Connect workspace <Icon name="arrow" size={14} /></button></div>
+      <div className="overview-callout"><span className="callout-icon"><Icon name="shield" size={17} /></span><span><strong>Workspace data is private.</strong> All records below are loaded from this workspace; empty states are shown until your team connects its systems.</span><button onClick={() => setActivePage("channels")}>View channels <Icon name="arrow" size={14} /></button></div>
       <section className="metric-grid" aria-label="Workspace metrics">
-        <MetricCard label="Conversations today" value="128" change="+12.8%" detail="vs. previous 7 days" icon="message" tone="orange" />
-        <MetricCard label="Autonomously resolved" value="84%" change="+6.2%" detail="of eligible conversations" icon="spark" tone="green" />
-        <MetricCard label="Meetings booked" value="16" change="+3 this week" detail="across all channels" icon="calendar" tone="purple" />
-        <MetricCard label="Needs your review" value={String(outstanding.length).padStart(2, "0")} change={outstanding.length ? "Action needed" : "All clear"} detail="high-stakes decisions" icon="shield" tone="peach" alert onClick={() => setActivePage("approvals")} />
+        <MetricCard label="New conversations today" value={String(todayCount)} change={conversations.length ? "Workspace data" : "No data"} detail="from the latest 100 conversations" icon="message" tone="orange" />
+        <MetricCard label="Handled without a person" value="—" change="Not available" detail="Requires connected agent-run analytics" icon="spark" tone="green" />
+        <MetricCard label="Meetings booked" value="—" change="Not available" detail="Requires a connected calendar" icon="calendar" tone="purple" />
+        <MetricCard label="Needs your review" value={String(outstanding.length)} change={outstanding.length ? "Action needed" : "All clear"} detail="pending workspace approvals" icon="shield" tone="peach" alert onClick={() => setActivePage("approvals")} />
       </section>
 
       <section className="overview-main-grid">
         <div className="console-card approval-summary-card">
-          <div className="card-heading"><div><h2>Needs your attention</h2><p>Decisions waiting on your team.</p></div><button className="text-link" onClick={() => setActivePage("approvals")}>View all <Icon name="arrow" size={14} /></button></div>
+          <div className="card-heading"><div><h2>Approvals waiting</h2><p>Requests that need a team member to decide.</p></div><button className="text-link" onClick={() => setActivePage("approvals")}>View all <Icon name="arrow" size={14} /></button></div>
           {outstanding.length === 0 ? <div className="empty-approvals"><Icon name="check" size={20} /><span>Nothing waiting for review.</span></div> : <div className="attention-list">{outstanding.slice(0, 3).map((item) => <button className="attention-item" key={item.id} onClick={() => setActivePage("approvals")}><Avatar initials={item.initials} small /><span className="attention-copy"><strong>{item.title}</strong><small>{item.person} · {item.company}</small></span><span className="attention-time">{item.time}</span><Icon name="chevron" size={15} /></button>)}</div>}
           <div className="approval-card-footer"><span><span className="attention-dot" /> {outstanding.length} awaiting approval</span><button onClick={() => setActivePage("approvals")}>Review queue <Icon name="arrow" size={14} /></button></div>
         </div>
 
         <div className="console-card live-activity-card">
-          <div className="card-heading"><div><p className="section-kicker">WHILE YOU WERE AWAY</p><h2>Work moved forward.</h2><p>Recent agent actions across your workspace.</p></div><button className="text-link" onClick={() => setActivePage("activity")}>View activity <Icon name="arrow" size={14} /></button></div>
-          <div className="activity-list">{activities.slice(0, 4).map((item) => <ActivityRow key={item.id} item={item} />)}</div>
+          <div className="card-heading"><div><p className="section-kicker">RECENT WORK</p><h2>Actions taken by Torqe.</h2><p>Recent agent actions across your workspace.</p></div><button className="text-link" onClick={() => setActivePage("activity")}>View activity <Icon name="arrow" size={14} /></button></div>
+          <div className="activity-list">{activity.length ? activity.slice(0, 4).map((item) => <ActivityRow key={item.id} item={item} />) : <div className="empty-approvals">Workspace activity will appear here when recorded.</div>}</div>
         </div>
       </section>
 
       <section className="overview-bottom-grid">
         <div className="console-card performance-card">
-          <div className="card-heading"><div><p className="section-kicker">THE INBOUND, IN MOTION</p><h2>More conversations. Less waiting.</h2><p>Sample volume and agent-resolved conversations.</p></div><select aria-label="Performance time range" className="select-period" value={range} onChange={(event) => setRange(event.target.value)}>{Object.entries(periods).map(([key, value]) => <option value={key} key={key}>{value.label}</option>)}</select></div>
-          <div className="chart-summary"><strong>{period.total}</strong><span>conversations handled</span><span className="chart-change"><Icon name="trend" size={14} /> {period.change}</span></div>
-          <div className="chart-legend"><span><i className="legend-orange" />Conversations</span><span><i className="legend-sand" />Resolved by agent</span><span className="chart-period-note">{period.label} · illustrative preview</span></div>
-          <div className="chart" role="img" aria-label={`Sample inbound conversation chart: ${period.label}`}>
-            <div className="chart-y-labels"><span>200</span><span>150</span><span>100</span><span>50</span><span>0</span></div>
-            <div className="chart-plot">{period.days.map(([day, total, resolved]) => <div className="chart-day" key={day}><div className="chart-bars"><i style={{ height: `${total}%` }} /><i style={{ height: `${resolved}%` }} /></div><span>{day}</span></div>)}</div>
+          <div className="card-heading"><div><p className="section-kicker">LAST 7 DAYS</p><h2>Conversation activity</h2><p>Based on conversation records currently in this workspace.</p></div></div>
+          <div className="chart-summary"><strong>{days.reduce((sum, day) => sum + day.count, 0)}</strong><span>conversations received</span></div>
+          <div className="chart-legend"><span><i className="legend-orange" />Conversations</span><span className="chart-period-note">Latest 100 records</span></div>
+          <div className="chart" role="img" aria-label="Conversation counts for the last seven days">
+            <div className="chart-y-labels"><span>{maxCount}</span><span>{Math.ceil(maxCount * .75)}</span><span>{Math.ceil(maxCount * .5)}</span><span>{Math.ceil(maxCount * .25)}</span><span>0</span></div>
+            <div className="chart-plot">{days.map((day) => <div className="chart-day" key={day.label}><div className="chart-bars"><i style={{ height: `${day.count ? Math.max(4, day.count / maxCount * 100) : 0}%` }} /></div><span>{day.label}</span></div>)}</div>
           </div>
         </div>
         <div className="console-card agent-status-card">
-          <div className="card-heading"><div><p className="section-kicker">THE AGENT</p><h2>Ready, with guardrails.</h2><p>Connections and operating mode.</p></div><span className="agent-orbit"><Icon name="spark" size={18} /></span></div>
-          <div className="agent-state-row"><span className="agent-status-dot" /><strong>{autopilot ? "Autopilot preview on" : "Autopilot paused"}</strong><span className="agent-mode">{autopilot ? "PREVIEW" : "OFF"}</span></div>
-          <p className="agent-status-note">Preview only. This control does not execute external agent actions.</p>
+          <div className="card-heading"><div><p className="section-kicker">AGENT STATUS</p><h2>Agent status and safety</h2><p>Server configuration and workspace operating mode.</p></div><span className="agent-orbit"><Icon name="spark" size={18} /></span></div>
+          <div className="agent-state-row"><span className="agent-status-dot" /><strong>{autopilot ? "Autopilot enabled" : "Autopilot paused"}</strong><span className="agent-mode">{autopilot ? "ON" : "OFF"}</span></div>
+          <p className="agent-status-note">External execution remains unavailable until a reviewed worker and connected tools are deployed.</p>
           <div className="agent-connection-list"><ConnectionStatus label="Supabase database" connected={status.supabase.configured} /><ConnectionStatus label="NVIDIA model" connected={status.model.configured} /></div>
-          <button className="agent-settings-link" onClick={() => setActivePage("integrations")}>Set up connections <Icon name="arrow" size={14} /></button>
+          <button className="agent-settings-link" onClick={() => setActivePage("tools")}>Set up tools <Icon name="arrow" size={14} /></button>
         </div>
       </section>
     </>
@@ -387,41 +617,99 @@ function ConnectionStatus({ label, connected }) {
   return <div className="connection-status"><span className={connected ? "connection-ok" : "connection-missing"} /><span>{label}</span><strong>{connected ? "Configured" : "Not connected"}</strong></div>;
 }
 
-function InboxPage({ conversations, activeConversation, setActiveConversation, pausedIds, togglePause, search, setSearch, reply, setReply, sendReply, showToast, inboxFilter, setInboxFilter, inboxChannel, setInboxChannel }) {
+function InboxPage({ workspaceId, conversations, activeConversation, setActiveConversation, togglePause, search, setSearch, inboxFilter, setInboxFilter, inboxChannel, setInboxChannel }) {
+  const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
   const visibleConversation = conversations.find((item) => item.id === activeConversation) || conversations[0];
-  const isPaused = visibleConversation ? pausedIds.has(visibleConversation.id) : false;
+  const isPaused = visibleConversation?.agentPaused || false;
   return (
-    <div className="inbox-layout console-card">
+    <div className={`inbox-layout console-card ${mobileThreadOpen ? "inbox-thread-open" : ""}`}>
       <aside className="inbox-list-panel">
-        <div className="inbox-list-heading"><div><p className="section-kicker">OMNICHANNEL</p><h2>Conversations</h2><span>{conversations.length} preview threads</span></div></div>
+        <div className="inbox-list-heading"><div><p className="section-kicker">TEAM INBOX</p><h2>Conversations</h2><span>{conversations.length} workspace threads</span></div></div>
         <label className="inbox-search"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search people or companies" /></label>
-        <div className="inbox-filters"><button className={inboxFilter === "all" ? "filter-active" : ""} onClick={() => setInboxFilter("all")}>All <span>{initialConversations.length}</span></button><button className={inboxFilter === "review" ? "filter-active" : ""} onClick={() => setInboxFilter("review")}>Needs review <span>{initialConversations.filter((item) => item.status === "Needs review").length}</span></button><label className="channel-filter"><span>Channel</span><select aria-label="Filter by channel" value={inboxChannel} onChange={(event) => setInboxChannel(event.target.value)}><option value="all">All channels</option><option value="whatsapp">WhatsApp</option><option value="gmail">Gmail</option><option value="outlook">Outlook</option><option value="linkedin">LinkedIn</option></select></label></div>
-        <div className="conversation-list">{conversations.length ? conversations.map((item) => <button key={item.id} className={`conversation-row ${item.id === visibleConversation?.id ? "conversation-selected" : ""}`} onClick={() => setActiveConversation(item.id)}><Avatar initials={item.initials} color={item.color} /><span className="conversation-copy"><span className="conversation-name-row"><strong>{item.name}</strong><small>{item.time}</small></span><span className="conversation-company">{item.company}</span><span className="conversation-preview">{item.preview}</span><span className="conversation-tags"><ChannelMark type={item.channelKey} /><span className={`conversation-state ${item.status === "Needs review" ? "state-review" : ""}`}>{item.status}</span></span></span>{item.unread > 0 && <span className="unread-dot" />}</button>) : <div className="conversation-empty">No conversations match. Adjust your search or filters.</div>}</div>
+        <div className="inbox-filters"><button className={inboxFilter === "all" ? "filter-active" : ""} onClick={() => setInboxFilter("all")}>All <span>{conversations.length}</span></button><button className={inboxFilter === "review" ? "filter-active" : ""} onClick={() => setInboxFilter("review")}>Needs review <span>{conversations.filter((item) => item.status === "Needs review").length}</span></button><label className="channel-filter"><span>Channel</span><select aria-label="Filter by channel" value={inboxChannel} onChange={(event) => setInboxChannel(event.target.value)}><option value="all">All channels</option><option value="whatsapp">WhatsApp</option><option value="gmail">Email</option><option value="linkedin">LinkedIn</option><option value="web">Web</option><option value="other">Other</option></select></label></div>
+        <div className="conversation-list">{conversations.length ? conversations.map((item) => <button key={item.id} className={`conversation-row ${item.id === visibleConversation?.id ? "conversation-selected" : ""}`} onClick={() => { setActiveConversation(item.id); setMobileThreadOpen(true); }}><Avatar initials={item.initials} color={item.color} /><span className="conversation-copy"><span className="conversation-name-row"><strong>{item.name}</strong><small>{item.time}</small></span><span className="conversation-company">{item.company}</span><span className="conversation-preview">{item.preview}</span><span className="conversation-tags"><ChannelMark type={item.channelKey} /><span className={`conversation-state ${item.status === "Needs review" ? "state-review" : ""}`}>{item.status}</span></span></span>{item.unread > 0 && <span className="unread-dot" />}</button>) : <div className="conversation-empty">No conversations match. Adjust your search or filters.</div>}</div>
       </aside>
-      {visibleConversation ? <section className="thread-panel">
-        <div className="thread-heading"><div className="thread-person"><Avatar initials={visibleConversation.initials} color={visibleConversation.color} /><span><strong>{visibleConversation.name}</strong><small>{visibleConversation.company} <span>·</span> {visibleConversation.channel}</small></span></div><div className="thread-tools"><StatusPill tone={isPaused ? "warning" : "success"}>{isPaused ? "AI paused" : "AI active"}</StatusPill><button className={`thread-pause-button ${isPaused ? "is-paused" : ""}`} onClick={() => togglePause(visibleConversation.id)}><Icon name={isPaused ? "spark" : "pause"} size={15} />{isPaused ? "Resume AI" : "Pause AI"}</button></div></div>
-        <div className="thread-context"><span className="context-tag">{visibleConversation.intent}</span><span className="context-score"><Icon name="trend" size={14} /> Lead score <strong>{visibleConversation.score}</strong></span><span className="context-owner"><Avatar initials="AT" color="charcoal" small /> Alex Taylor</span></div>
-        <div className="thread-messages">{(visibleConversation.messages || [{ from: "prospect", text: visibleConversation.preview, time: visibleConversation.time }]).map((message, index) => <div key={`${visibleConversation.id}-${index}`} className={`message-row message-${message.from}`}><span className="message-author">{message.from === "prospect" ? visibleConversation.name.split(" ")[0] : message.from === "agent" ? "Torqe agent" : "Alex Taylor"} <span>· {message.time}</span></span><div className="message-bubble">{message.text}{message.pending && <StatusPill tone="warning">Human follow-up</StatusPill>}</div></div>)}</div>
-        <div className="thread-assistant-note"><span className="assistant-note-icon"><Icon name="spark" size={14} /></span><span><strong>Torqe flagged this conversation</strong><small>Custom commercial terms require approval before anything is sent.</small></span><button onClick={() => showToast("This is an example recommendation from preview data.")}>View reason</button></div>
-        <form className="thread-reply" onSubmit={sendReply}><textarea value={reply} onChange={(event) => setReply(event.target.value)} placeholder={isPaused ? "Write a message as Alex…" : "Reply to this conversation…"} rows={2} /><div className="reply-toolbar"><span><Icon name="spark" size={14} /> AI draft available <span className="preview-only-label">· preview only</span></span><button type="submit" disabled={!reply.trim()}><Icon name="send" size={15} /> Send reply</button></div></form>
+      {visibleConversation ? <section className={`thread-panel ${mobileThreadOpen ? "thread-mobile-open" : ""}`}>
+        <div className="thread-heading"><button className="thread-back-button" onClick={() => setMobileThreadOpen(false)} aria-label="Back to conversations"><Icon name="chevron" size={18} /></button><div className="thread-person"><Avatar initials={visibleConversation.initials} color={visibleConversation.color} /><span><strong>{visibleConversation.name}</strong><small>{visibleConversation.company} <span>·</span> {visibleConversation.channel}</small></span></div><div className="thread-tools"><StatusPill tone={isPaused ? "warning" : "success"}>{isPaused ? "AI paused" : "AI active"}</StatusPill><button className={`thread-pause-button ${isPaused ? "is-paused" : ""}`} onClick={() => togglePause(visibleConversation.id)}><Icon name={isPaused ? "spark" : "pause"} size={15} />{isPaused ? "Resume AI" : "Pause AI"}</button></div></div>
+        <div className="thread-context"><span className="context-tag">{visibleConversation.intent}</span><span className="context-score"><Icon name="trend" size={14} /> Lead score <strong>{visibleConversation.score}</strong></span><span className="context-owner">{visibleConversation.company}</span></div>
+        <div className="thread-messages">{(visibleConversation.messages || []).map((message, index) => <div key={`${visibleConversation.id}-${index}`} className={`message-row message-${message.from}`}><span className="message-author">{message.from === "prospect" ? visibleConversation.name.split(" ")[0] : message.from === "agent" ? "Torqe agent" : message.from === "human" ? "Workspace member" : "System"} <span>· {message.time}</span></span><div className="message-bubble">{message.text}{message.pending && <StatusPill tone="warning">Human follow-up</StatusPill>}</div></div>)}</div>
+        <ConversationDraft workspaceId={workspaceId} conversationId={visibleConversation.id} />
       </section> : <section className="thread-panel thread-empty"><span className="empty-file"><Icon name="inbox" size={21} /></span><p>Select different filters to see matching conversations.</p></section>}
     </div>
   );
 }
 
+function ConversationDraft({ workspaceId, conversationId }) {
+  const [draft, setDraft] = useState("");
+  const [savedDraft, setSavedDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [savedAt, setSavedAt] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    const query = new URLSearchParams({ workspaceId, conversationId });
+    fetch(`/api/console/conversation-drafts?${query}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load this draft.");
+        if (active) {
+          setDraft(data.draft.body || "");
+          setSavedDraft(data.draft.body || "");
+          setSavedAt(data.draft.updated_at || null);
+        }
+      })
+      .catch((loadError) => { if (active) setError(loadError.message || "Could not load this draft."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, conversationId]);
+
+  async function saveDraft() {
+    setSaving(true);
+    setError("");
+    try {
+      const query = new URLSearchParams({ workspaceId, conversationId });
+      const response = await fetch(`/api/console/conversation-drafts?${query}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: draft }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save this draft.");
+      setDraft(data.draft.body);
+      setSavedDraft(data.draft.body);
+      setSavedAt(data.draft.updated_at);
+    } catch (saveError) {
+      setError(saveError.message || "Could not save this draft.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const hasChanges = draft !== savedDraft;
+  return <div className="thread-reply">
+    <div className="draft-heading"><strong>Private reply draft</strong><span>{savedAt && !hasChanges ? `Saved ${formatRecordTime(savedAt)}` : hasChanges ? "Unsaved changes" : "Not sent"}</span></div>
+    <textarea aria-label="Private reply draft" placeholder={loading ? "Loading your draft…" : "Write a reply draft for your team to review…"} rows={3} maxLength={10000} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={loading || Boolean(error && !savedAt)} />
+    {error && <p className="draft-error" role="alert">{error}</p>}
+    <div className="reply-toolbar"><span><Icon name="lock" size={14} /> Only you can see this draft. Sending is unavailable.</span><button type="button" onClick={saveDraft} disabled={loading || saving || !hasChanges || Boolean(error && !savedAt)}><Icon name={saving ? "activity" : "check"} size={15} />{saving ? "Saving…" : "Save draft"}</button></div>
+  </div>;
+}
+
 function ApprovalsPage({ approvals, reviewApproval, setActivePage, setActiveConversation }) {
   const pending = approvals.filter((item) => item.status === "pending");
   const reviewed = approvals.filter((item) => item.status !== "pending");
-  return <div className="page-stack"><div className="approval-queue-header"><div><span className="queue-count">{pending.length}</span><span> items need your review</span></div><button className="console-secondary-button" onClick={() => setActivePage("automations")}><Icon name="settings" size={15} /> Approval policies</button></div>{pending.length === 0 ? <div className="console-card approval-empty"><span className="empty-check"><Icon name="check" /></span><h2>You’re all caught up.</h2><p>New high-stakes decisions will appear here for your review.</p></div> : <div className="approval-grid">{pending.map((item) => <article className="console-card approval-card" key={item.id}><div className="approval-card-top"><div className={`risk-badge risk-${item.risk.toLowerCase()}`}><Icon name="shield" size={14} />{item.risk} review</div><span className="approval-time">{item.time}</span></div><h2>{item.title}</h2><p className="approval-type">{item.type}</p><div className="approval-requester"><Avatar initials={item.initials} small /><span><strong>{item.person}</strong><small>{item.company}</small></span><button className="text-link" onClick={() => { setActiveConversation(item.conversationId); setActivePage("inbox"); }}>View thread <Icon name="arrow" size={13} /></button></div><div className="approval-context"><strong>Why this needs a human</strong><p>The request falls outside the agent's approved commercial policy. Review the conversation and confirm the next step before responding.</p></div><div className="approval-actions"><button className="approval-reject" onClick={() => reviewApproval(item.id, "rejected")}>Request changes</button><button className="approval-approve" onClick={() => reviewApproval(item.id, "approved")}><Icon name="check" size={15} /> Approve</button></div><p className="preview-action-note">Preview only · external actions are disabled</p></article>)}</div>}{reviewed.length > 0 && <div className="console-card reviewed-card"><div className="card-heading"><div><h2>Recently reviewed</h2><p>Decisions made in this preview session.</p></div></div>{reviewed.map((item) => <div className="reviewed-row" key={item.id}><Avatar initials={item.initials} small /><span><strong>{item.title}</strong><small>{item.person} · {item.company}</small></span><StatusPill tone={item.status === "approved" ? "success" : "neutral"}>{item.status === "approved" ? "Approved · preview" : "Changes requested"}</StatusPill></div>)}</div>}</div>;
+  return <div className="page-stack"><div className="approval-queue-header"><div><span className="queue-count">{pending.length}</span><span> items need your review</span></div><button className="console-secondary-button" onClick={() => setActivePage("automations")}><Icon name="settings" size={15} /> Approval policies</button></div>{pending.length === 0 ? <div className="console-card approval-empty"><span className="empty-check"><Icon name="check" /></span><h2>You’re all caught up.</h2><p>New workspace approvals will appear here when created.</p></div> : <div className="approval-grid">{pending.map((item) => <article className="console-card approval-card" key={item.id}><div className="approval-card-top"><div className={`risk-badge risk-${item.risk.toLowerCase()}`}><Icon name="shield" size={14} />{item.risk} review</div><span className="approval-time">{item.time}</span></div><h2>{item.title}</h2><p className="approval-type">{item.type}</p><div className="approval-requester"><Avatar initials={item.initials} small /><span><strong>{item.person}</strong><small>{item.company}</small></span>{item.conversationId && <button className="text-link" onClick={() => { setActiveConversation(item.conversationId); setActivePage("inbox"); }}>View thread <Icon name="arrow" size={13} /></button>}</div><div className="approval-context"><strong>Approval details</strong><p>{item.reviewReason || "Review the request details and record your decision. This will not trigger an external action."}</p></div><div className="approval-actions"><button className="approval-reject" onClick={() => reviewApproval(item.id, "rejected")}>Reject request</button><button className="approval-approve" onClick={() => reviewApproval(item.id, "approved")}><Icon name="check" size={15} /> Record approval</button></div><p className="preview-action-note">Recording a decision does not send messages or execute external actions.</p></article>)}</div>}{reviewed.length > 0 && <div className="console-card reviewed-card"><div className="card-heading"><div><h2>Recently reviewed</h2><p>Decisions recorded in this workspace.</p></div></div>{reviewed.map((item) => <div className="reviewed-row" key={item.id}><Avatar initials={item.initials} small /><span><strong>{item.title}</strong><small>{item.person} · {item.company}</small></span><StatusPill tone={item.status === "approved" ? "success" : "neutral"}>{item.status === "approved" ? "Approved" : item.status === "rejected" ? "Rejected" : "Edited"}</StatusPill></div>)}</div>}</div>;
 }
 
 function ActivityRow({ item }) {
   return <div className="activity-row"><span className={`activity-icon activity-${item.tone}`}><Icon name={item.icon} size={16} /></span><span className="activity-copy"><strong>{item.title}</strong><small>{item.detail}</small></span><span className="activity-state"><StatusPill tone={item.state === "Completed" ? "success" : "warning"}>{item.state}</StatusPill></span><span className="activity-time">{item.time}</span></div>;
 }
 
-function ActivityPage() {
-  const entries = activities.concat([{ id: "e5", title: "Inbound lead qualified", detail: "Daniel Kim · Arc & Oak", time: "52m ago", icon: "spark", tone: "mint", state: "Completed" }, { id: "e6", title: "Lead added to HubSpot", detail: "Daniel Kim · Arc & Oak", time: "55m ago", icon: "plug", tone: "lavender", state: "Completed" }]);
-  return <div className="console-card full-activity-card"><div className="card-heading"><div><h2>Recent agent activity</h2><p>All events below are sample activity in the preview workspace.</p></div><button className="console-secondary-button" onClick={() => exportCsv("torqe-activity-preview.csv", [["Event", "Details", "Time", "Status"], ...entries.map((item) => [item.title, item.detail, item.time, item.state])])}><Icon name="download" size={15} /> Export log</button></div><div className="activity-list activity-full-list">{entries.map((item) => <ActivityRow key={item.id} item={item} />)}</div><div className="activity-table-note"><Icon name="shield" size={15} /> Live audit events will appear here after a connected workspace is configured.</div></div>;
+function ActivityPage({ entries }) {
+  return <div className="console-card full-activity-card"><div className="card-heading"><div><h2>Workspace activity</h2><p>Recorded audit events for this workspace.</p></div>{entries.length > 0 && <button className="console-secondary-button" onClick={() => exportCsv("torqe-activity.csv", [["Event", "Details", "Time", "Status"], ...entries.map((item) => [item.title, item.detail, item.time, item.state])])}><Icon name="download" size={15} /> Export log</button>}</div>{entries.length ? <div className="activity-list activity-full-list">{entries.map((item) => <ActivityRow key={item.id} item={item} />)}</div> : <div className="activity-table-note"><Icon name="shield" size={15} /> Workspace events will appear here when records are created.</div>}</div>;
 }
 
 function AutomationsPage({ autopilot, setAutopilot, instructions, setInstructions, instructionsSaved, saveInstructions }) {
@@ -442,16 +730,291 @@ function KnowledgePage({ status, showToast, knowledgeFiles, onFilesSelected, inp
   return <div className="knowledge-layout"><section className="console-card knowledge-intro"><span className="knowledge-illustration"><Icon name="file" size={26} /></span><div><p className="console-eyebrow">GROUNDED ANSWERS</p><h2>Give your agent the right context.</h2><p>Upload product docs, pricing, technical guides, and approved policies. Torqe can use retrieval with source citations and escalate when information is missing.</p><input ref={inputRef} className="visually-hidden" type="file" aria-label="Select knowledge documents" accept=".pdf,.doc,.docx,.txt,.md,.csv" multiple onChange={handleFileChange} /><button className="console-primary-button" onClick={() => inputRef.current?.click()}><Icon name="file" size={15} /> Add documents</button><small className="preview-upload-note">Files are selected locally only; connect Supabase Storage to ingest them.</small></div></section><section className="console-card knowledge-status"><div className="card-heading"><div><h2>Knowledge connections</h2><p>Sources available to the agent.</p></div></div><div className="knowledge-source-row"><span className="source-type-icon source-database"><Icon name="grid" size={17} /></span><span><strong>Supabase knowledge store</strong><small>Document chunks, metadata & vector search</small></span><StatusPill tone={status.supabase.configured ? "success" : "warning"}>{status.supabase.configured ? "Project configured" : "Not connected"}</StatusPill></div><div className="knowledge-source-row"><span className="source-type-icon source-rag"><Icon name="search" size={17} /></span><span><strong>Retrieval & reranking</strong><small>Metadata filtering · citation-first answers</small></span><StatusPill>Not configured</StatusPill></div></section><section className="knowledge-empty console-card">{knowledgeFiles.length ? <><div className="knowledge-files-heading"><span><p className="section-kicker">LOCAL PREVIEW</p><h2>{knowledgeFiles.length} selected document{knowledgeFiles.length === 1 ? "" : "s"}</h2></span><button className="text-link" onClick={() => inputRef.current?.click()}>Add more <Icon name="arrow" size={14} /></button></div><ul className="knowledge-file-list">{knowledgeFiles.map((name) => <li key={name}><Icon name="file" size={16} /><span>{name}</span><StatusPill>Not ingested</StatusPill></li>)}</ul></> : <><span className="empty-file"><Icon name="file" size={21} /></span><h2>Your knowledge library is waiting.</h2><p>When your workspace is connected, add handbooks, product documentation, pricing guides, and security answers.</p><button className="text-link" onClick={() => showToast("Supported formats: PDF, DOC, DOCX, TXT, MD, and CSV.")}>View supported sources <Icon name="arrow" size={14} /></button></>}</section></div>;
 }
 
-function IntegrationsPage({ status, setIntegrationInfo }) {
-  return <div className="integrations-page"><div className="integration-notice"><span><Icon name="shield" size={18} /></span><p><strong>Preview mode — connections are not live.</strong> OAuth credentials and channel webhooks must be set up by a workspace administrator.</p><StatusPill tone="warning">Setup required</StatusPill></div><div className="integration-section-heading"><div><h2>Connect your workflow</h2><p>One shared context across messaging, CRM, calendars, and agent tools.</p></div><span className="integration-summary">{status.supabase.configured ? "Database variables detected" : "Workspace not connected"}</span></div><div className="integration-grid">{initialIntegrations.map((integration) => <IntegrationCard key={integration.id} integration={integration} configured={integration.keyCheck ? status[integration.keyCheck]?.configured : false} onClick={() => setIntegrationInfo(integration)} />)}</div><div className="console-card database-integration"><div className="database-mark"><Icon name="grid" size={20} /></div><div className="database-copy"><h3>Supabase</h3><p>Workspace database, authentication, and vector-ready knowledge storage.</p><span className="database-details"><i className={status.supabase.configured ? "connection-ok" : "connection-missing"} />{status.supabase.configured ? "Project variables detected · database connection not verified" : "Project URL and publishable key required"}</span></div><button className="console-secondary-button" onClick={() => setIntegrationInfo({ name: "Supabase", kind: "DATABASE", detail: "Database, authentication, and knowledge storage", icon: "S", tone: "green" })}>Setup guide <Icon name="arrow" size={14} /></button></div><p className="integration-security-note"><Icon name="lock" size={14} /> Provider credentials are never requested or stored by this preview interface.</p></div>;
+function ConnectionsPage({ category, status, setIntegrationInfo, integrations }) {
+  const items = integrationCatalog.filter((item) => category === "CHANNEL"
+    ? item.kind === "CHANNEL"
+    : item.kind !== "CHANNEL" && item.kind !== "AI MODEL");
+  const connected = new Map(integrations.map((integration) => [integration.provider, integration]));
+  const heading = category === "CHANNEL" ? "Messaging channels" : "Connected tools";
+  const description = category === "CHANNEL"
+    ? "Email, messaging, and social conversations your team wants to manage."
+    : "CRM, calendars, support, legal, and payment systems available to the agent.";
+  return <div className="integrations-page"><div className="integration-notice"><span><Icon name="shield" size={18} /></span><p><strong>Connections are not active yet.</strong> Provider actions remain unavailable until secure OAuth, webhooks, and execution workers are configured and reviewed.</p><StatusPill tone="warning">Setup required</StatusPill></div><div className="integration-section-heading"><div><h2>{heading}</h2><p>{description}</p></div><span className="integration-summary">{integrations.length} workspace connections</span></div><div className="integration-grid">{items.map((integration) => {
+    const record = connected.get(integration.id);
+    const configured = integration.keyCheck ? status[integration.keyCheck]?.configured : record?.status === "connected";
+    return <IntegrationCard key={integration.id} integration={integration} configured={Boolean(configured)} onClick={() => setIntegrationInfo(integration)} />;
+  })}</div><p className="integration-security-note"><Icon name="lock" size={14} /> Credentials are never collected in this page. Connected-provider setup is pending.</p></div>;
+}
+
+function AISettingsPage({ workspaceId, role, showToast }) {
+  const [configuration, setConfiguration] = useState(null);
+  const [provider, setProvider] = useState("torqe_managed");
+  const [model, setModel] = useState(AI_MODELS.nvidia[0].id);
+  const [apiKey, setApiKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [deploymentType, setDeploymentType] = useState("customer_hosted");
+  const [deploymentModel, setDeploymentModel] = useState("");
+  const [deploymentRegion, setDeploymentRegion] = useState("");
+  const [deploymentEndpoint, setDeploymentEndpoint] = useState("");
+  const [deploymentRequirements, setDeploymentRequirements] = useState("");
+  const [deploymentSaving, setDeploymentSaving] = useState(false);
+  const [deploymentError, setDeploymentError] = useState("");
+  const [deploymentSubmitted, setDeploymentSubmitted] = useState(false);
+  const canManage = ["owner", "admin"].includes(role);
+  const models = provider === "openai_byok" ? AI_MODELS.openai : AI_MODELS.nvidia;
+  const currentKeyConfigured = configuration?.provider === provider && configuration.keyConfigured;
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    fetch(`/api/console/ai/config?workspaceId=${encodeURIComponent(workspaceId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load AI settings.");
+        if (active) {
+          setConfiguration(data.configuration);
+          setProvider(data.configuration.provider);
+          setModel(data.configuration.model);
+        }
+      })
+      .catch((loadError) => { if (active) setError(loadError.message || "Could not load AI settings."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId]);
+
+  function changeProvider(nextProvider) {
+    setProvider(nextProvider);
+    const nextModels = nextProvider === "openai_byok" ? AI_MODELS.openai : AI_MODELS.nvidia;
+    if (!nextModels.some((item) => item.id === model)) setModel(nextModels[0].id);
+  }
+
+  async function saveConfiguration(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/console/ai/config?workspaceId=${encodeURIComponent(workspaceId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, model, apiKey }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save AI settings.");
+      setConfiguration(data.configuration);
+      setApiKey("");
+      showToast("Workspace AI settings saved securely.");
+    } catch (saveError) {
+      setError(saveError.message || "Could not save AI settings.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitDeploymentRequest(event) {
+    event.preventDefault();
+    setDeploymentSaving(true);
+    setDeploymentError("");
+    try {
+      const response = await fetch("/api/console/ai/deployment-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          deploymentType,
+          modelPreference: deploymentModel,
+          region: deploymentRegion,
+          endpoint: deploymentEndpoint,
+          requirements: deploymentRequirements,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not submit deployment request.");
+      setDeploymentSubmitted(true);
+      showToast("Private deployment request submitted.");
+    } catch (requestError) {
+      setDeploymentError(requestError.message || "Could not submit deployment request.");
+    } finally {
+      setDeploymentSaving(false);
+    }
+  }
+
+  return <div className="ai-settings-page">
+    <div className="integration-notice"><span><Icon name="shield" size={18} /></span><p><strong>Torqe is not fine-tuned on this form.</strong> It configures the serving model and workspace instructions; training model weights requires a separate data, evaluation, and deployment process.</p><StatusPill tone="warning">No fine-tuning</StatusPill></div>
+    <section className="console-card ai-config-card">
+      <div className="card-heading"><div><p className="section-kicker">WORKSPACE AI</p><h2>Choose a model provider</h2><p>API keys are encrypted on the server and never returned to the browser.</p></div></div>
+      {loading ? <div className="inbox-empty"><span>Loading AI settings…</span></div> : !configuration ? <p className="access-error" role="alert">{error || "AI settings could not be loaded."}</p> : <form className="ai-config-form" onSubmit={saveConfiguration}>
+        <label htmlFor="ai-provider">Provider</label>
+        <select id="ai-provider" value={provider} onChange={(event) => changeProvider(event.target.value)} disabled={!canManage}>
+          <option value="torqe_managed">Torqe managed · NVIDIA</option>
+          <option value="nvidia_byok">NVIDIA · use my API key</option>
+          <option value="openai_byok">OpenAI · use my API key</option>
+        </select>
+        <label htmlFor="ai-model">Model</label>
+        <select id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!canManage}>
+          {models.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select>
+        {provider !== "torqe_managed" && <><label htmlFor="ai-api-key">Provider API key</label><input id="ai-api-key" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={currentKeyConfigured ? "Saved securely · enter a new key to replace" : "Paste provider API key"} disabled={!canManage} /><small>{currentKeyConfigured ? "A key is saved. Leave this blank to keep it." : "Required to use this provider."}</small></>}
+        {error && <p className="access-error" role="alert">{error}</p>}
+        {!canManage && <p className="integration-security-note">Only workspace owners and admins can change model settings.</p>}
+        {canManage && <button className="console-primary-button" type="submit" disabled={saving || loading}>{saving ? "Saving…" : "Save AI settings"} <Icon name="check" size={16} /></button>}
+        <div className="ai-provider-status"><StatusPill tone={(provider === "torqe_managed" ? configuration?.managedKeyConfigured : currentKeyConfigured) ? "success" : "warning"}>{provider === "torqe_managed" ? configuration?.managedKeyConfigured ? "Managed key configured" : "Managed key missing" : currentKeyConfigured ? "Workspace key configured" : "API key required"}</StatusPill><span>Changes apply to Torqe Copilot for this workspace.</span></div>
+      </form>}
+    </section>
+
+    <section className="console-card deployment-request-card">
+      <div className="card-heading"><div><p className="section-kicker">PRIVATE OR LOCAL HOSTING</p><h2>Request a private deployment</h2><p>Tell our team about a customer-hosted or private-cloud setup. This submits an inquiry only; it will not connect to your endpoint.</p></div></div>
+      {deploymentSubmitted ? <div className="deployment-confirmation" role="status"><Icon name="check" size={19} /><span><strong>Request received.</strong><small>Our team will follow up through your workspace account email. No endpoint connection was attempted.</small></span></div>
+        : <form className="ai-config-form deployment-form" onSubmit={submitDeploymentRequest}>
+          <label htmlFor="deployment-type">Deployment model</label>
+          <select id="deployment-type" value={deploymentType} onChange={(event) => setDeploymentType(event.target.value)}>
+            <option value="customer_hosted">Run in our own environment</option>
+            <option value="torqe_private_cloud">Torqe-managed private cloud</option>
+            <option value="private_endpoint">Connect a private model endpoint</option>
+          </select>
+          <label htmlFor="deployment-model">Model / serving preference</label>
+          <input id="deployment-model" value={deploymentModel} onChange={(event) => setDeploymentModel(event.target.value)} placeholder="Model name or serving requirements" maxLength={128} required />
+          <label htmlFor="deployment-region">Region / hosting location</label>
+          <input id="deployment-region" value={deploymentRegion} onChange={(event) => setDeploymentRegion(event.target.value)} placeholder="e.g. EU, US-East, on-premises" maxLength={100} required />
+          {deploymentType === "private_endpoint" && <><label htmlFor="deployment-endpoint">Private endpoint URL</label><input id="deployment-endpoint" type="url" value={deploymentEndpoint} onChange={(event) => setDeploymentEndpoint(event.target.value)} placeholder="https://model.internal.example" maxLength={500} required /><small>Stored for review only. Torqe will not make a network request to this URL.</small></>}
+          <label htmlFor="deployment-requirements">Security, scale, or compliance requirements <span>(optional)</span></label>
+          <textarea id="deployment-requirements" value={deploymentRequirements} onChange={(event) => setDeploymentRequirements(event.target.value)} maxLength={3000} rows={4} placeholder="Share deployment, data residency, or security requirements." />
+          {deploymentError && <p className="access-error" role="alert">{deploymentError}</p>}
+          {!canManage && <p className="integration-security-note">Only workspace owners and admins can submit a deployment request.</p>}
+          <button className="console-secondary-button" type="submit" disabled={deploymentSaving || !canManage}>{deploymentSaving ? "Submitting…" : "Submit private deployment request"} <Icon name="arrow" size={15} /></button>
+        </form>}
+    </section>
+  </div>;
+}
+
+function ProfilePage({ user, onUpdated, showToast }) {
+  const [name, setName] = useState(user?.name || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => setName(user?.name || ""), [user?.name]);
+
+  async function saveProfile(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/console/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not update your profile.");
+      onUpdated(data.user.name);
+      showToast("Profile updated.");
+    } catch (saveError) {
+      setError(saveError.message || "Could not update your profile.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <section className="console-card profile-card"><div className="card-heading"><div><p className="section-kicker">ACCOUNT</p><h2>Profile details</h2><p>Update how your name appears to your team.</p></div></div><form className="ai-config-form" onSubmit={saveProfile}><label htmlFor="profile-name">Full name</label><input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} minLength={2} maxLength={80} required /><label htmlFor="profile-email">Sign-in email</label><input id="profile-email" type="email" value={user?.email || ""} readOnly /><small>Your sign-in email is managed by your workspace administrator.</small>{error && <p className="access-error" role="alert">{error}</p>}<button className="console-primary-button" type="submit" disabled={saving}>{saving ? "Saving…" : "Save profile"} <Icon name="check" size={16} /></button></form></section>;
 }
 
 function IntegrationCard({ integration, configured, onClick }) {
   return <article className="console-card integration-card"><div className="integration-card-top"><IntegrationLogo integration={integration} /><span className="integration-kind">{integration.kind}</span></div><h3>{integration.name}</h3><p>{integration.detail}</p><div className="integration-card-footer"><StatusPill tone={configured ? "success" : "neutral"}>{configured ? "Key detected" : "Not connected"}</StatusPill><button onClick={onClick}>{configured ? "Manage" : "Connect"} <Icon name="arrow" size={13} /></button></div></article>;
 }
 
-function SettingsPage({ status, showToast }) {
-  return <div className="settings-layout"><section className="console-card settings-section"><div className="card-heading"><div><h2>Workspace profile</h2><p>Your organization's console identity.</p></div></div><div className="settings-field"><label htmlFor="workspace-name">Workspace name</label><input id="workspace-name" defaultValue="Torqe workspace" readOnly aria-describedby="workspace-name-help" /><small id="workspace-name-help">Workspace profile editing will be available after account setup.</small></div><div className="settings-field"><label>Workspace ID</label><div className="settings-readonly">torqe-preview-workspace <span>PREVIEW</span></div></div></section><section className="console-card settings-section"><div className="card-heading"><div><h2>Connected services</h2><p>Configuration detected by the server.</p></div></div><div className="settings-service"><span className="settings-service-icon"><Icon name="grid" size={16} /></span><span><strong>Supabase</strong><small>URL and public key</small></span><StatusPill tone={status.supabase.configured ? "success" : "warning"}>{status.supabase.configured ? "Configured" : "Not configured"}</StatusPill></div><div className="settings-service"><span className="settings-service-icon settings-model-icon"><Icon name="spark" size={16} /></span><span><strong>NVIDIA model</strong><small>Server-side API key</small></span><StatusPill tone={status.model.configured ? "success" : "warning"}>{status.model.configured ? "Key detected" : "Not configured"}</StatusPill></div><p className="settings-secret-note"><Icon name="lock" size={14} /> API secrets are kept on the server and never displayed here.</p></section><section className="console-card settings-section access-settings"><div className="card-heading"><div><h2>Access & security</h2><p>Console access is restricted to invitation holders.</p></div><span className="access-lock-icon"><Icon name="lock" size={17} /></span></div><div className="security-setting"><span><strong>Invitation gate</strong><small>Access code verified server-side</small></span><StatusPill tone="success">Enabled</StatusPill></div><div className="security-setting"><span><strong>Session protection</strong><small>HTTP-only cookie · eight-hour expiry</small></span><StatusPill tone="success">Enabled</StatusPill></div><div className="security-setting"><span><strong>Organization-level database access</strong><small>Requires Supabase Auth and provisioned team membership.</small></span><StatusPill tone={status.supabase.configured ? "warning" : "neutral"}>{status.supabase.configured ? "Not verified" : "Not configured"}</StatusPill></div></section><div className="settings-warning"><Icon name="shield" size={17} /><span><strong>Not a production identity system yet.</strong> The shared invitation gate is intended for a private preview. Before handling client data, add verified individual Supabase sign-in, provision team membership, and enforce tenant access using the included RLS policies.</span><button className="text-link" onClick={() => showToast("See console/README.md for the required Supabase and deployment setup.")}>Setup notes <Icon name="arrow" size={13} /></button></div></div>;
+function SettingsPage({ status, showToast, workspace, workspaceId, role }) {
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("operator");
+  const [invitations, setInvitations] = useState([]);
+  const [inviteError, setInviteError] = useState("");
+  const [loadingInvitations, setLoadingInvitations] = useState(false);
+  const [sendingInvitation, setSendingInvitation] = useState(false);
+  const canManageInvitations = ["owner", "admin"].includes(role);
+
+  useEffect(() => {
+    if (!canManageInvitations || !workspaceId) {
+      setInvitations([]);
+      return undefined;
+    }
+
+    let active = true;
+    setLoadingInvitations(true);
+    setInviteError("");
+    fetch(`/api/console/invitations?workspaceId=${encodeURIComponent(workspaceId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load invitations.");
+        return data;
+      })
+      .then((data) => { if (active) setInvitations(data.invitations || []); })
+      .catch((error) => { if (active) setInviteError(error.message || "Could not load invitations."); })
+      .finally(() => { if (active) setLoadingInvitations(false); });
+    return () => { active = false; };
+  }, [canManageInvitations, workspaceId]);
+
+  async function sendInvitation(event) {
+    event.preventDefault();
+    setSendingInvitation(true);
+    setInviteError("");
+    try {
+      const response = await fetch(`/api/console/invitations?workspaceId=${encodeURIComponent(workspaceId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not send this invitation.");
+      setInviteEmail("");
+      showToast("Workspace invitation sent.");
+      const listResponse = await fetch(`/api/console/invitations?workspaceId=${encodeURIComponent(workspaceId)}`, { cache: "no-store" });
+      const listData = await listResponse.json();
+      if (!listResponse.ok) throw new Error(listData.error || "Invitation sent, but the list could not be refreshed.");
+      setInvitations(listData.invitations || []);
+    } catch (error) {
+      setInviteError(error.message || "Could not send this invitation.");
+    } finally {
+      setSendingInvitation(false);
+    }
+  }
+
+  return <div className="settings-layout">
+    <section className="console-card settings-section">
+      <div className="card-heading"><div><h2>Workspace profile</h2><p>Your organization's console identity.</p></div></div>
+      <div className="settings-field"><label htmlFor="workspace-name">Workspace name</label><input id="workspace-name" value={workspace?.name || ""} readOnly aria-describedby="workspace-name-help" /><small id="workspace-name-help">Workspace profile editing is not available yet.</small></div>
+      <div className="settings-field"><label htmlFor="workspace-id">Workspace ID</label><div className="settings-readonly" id="workspace-id">{workspaceId}<span>{role || "member"}</span></div></div>
+    </section>
+    <section className="console-card settings-section">
+      <div className="card-heading"><div><h2>Connected services</h2><p>Configuration verified by this deployment.</p></div></div>
+      <div className="settings-service"><span className="settings-service-icon"><Icon name="grid" size={16} /></span><span><strong>Supabase</strong><small>Authenticated database session</small></span><StatusPill tone={status.supabase.configured ? "success" : "warning"}>{status.supabase.configured ? "Connected" : "Not configured"}</StatusPill></div>
+      <div className="settings-service"><span className="settings-service-icon settings-model-icon"><Icon name="spark" size={16} /></span><span><strong>NVIDIA model</strong><small>Server-side API key</small></span><StatusPill tone={status.model.configured ? "success" : "warning"}>{status.model.configured ? "Key detected" : "Not configured"}</StatusPill></div>
+      <p className="settings-secret-note"><Icon name="lock" size={14} /> API secrets are kept on the server and never displayed here.</p>
+    </section>
+    <section className="console-card settings-section access-settings">
+      <div className="card-heading"><div><h2>Team access</h2><p>Invite-only accounts with workspace-scoped roles.</p></div><span className="access-lock-icon"><Icon name="lock" size={17} /></span></div>
+      {canManageInvitations ? <>
+        <form className="workspace-invite-form" onSubmit={sendInvitation}>
+          <label htmlFor="invite-email">Invite a teammate</label>
+          <div className="workspace-invite-fields">
+            <input id="invite-email" type="email" autoComplete="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="teammate@company.com" required />
+            <select aria-label="Invitation role" value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="admin">Admin</option><option value="operator">Operator</option><option value="viewer">Viewer</option></select>
+            <button type="submit" className="console-primary-button" disabled={sendingInvitation}>{sendingInvitation ? "Sending…" : "Send invite"}</button>
+          </div>
+          {inviteError && <p className="access-error" role="alert">{inviteError}</p>}
+        </form>
+        <div className="workspace-invitation-list"><h3>Workspace invitations</h3>
+          {loadingInvitations ? <p>Loading invitations…</p> : invitations.length ? invitations.map((invitation) => <div className="security-setting" key={invitation.id}><span><strong>{invitation.email}</strong><small>{invitation.role} · {new Date(invitation.created_at).toLocaleDateString()}</small></span><StatusPill tone={invitation.status === "accepted" ? "success" : "neutral"}>{invitation.status}</StatusPill></div>) : <p>No invitations found for this workspace.</p>}
+        </div>
+      </> : <div className="settings-warning"><Icon name="shield" size={17} /><span><strong>Administrator access required.</strong> Ask a workspace owner or admin to invite teammates.</span></div>}
+    </section>
+    <section className="console-card settings-section access-settings">
+      <div className="card-heading"><div><h2>Access & security</h2><p>Identity and database protections.</p></div><span className="access-lock-icon"><Icon name="lock" size={17} /></span></div>
+      <div className="security-setting"><span><strong>Supabase Auth</strong><small>Individual email and password sign-in</small></span><StatusPill tone="success">Enabled</StatusPill></div>
+      <div className="security-setting"><span><strong>Workspace isolation</strong><small>Organization-scoped row-level security</small></span><StatusPill tone="success">Enforced</StatusPill></div>
+      <div className="security-setting"><span><strong>External actions</strong><small>Messaging and agent execution workers</small></span><StatusPill tone="warning">Not enabled</StatusPill></div>
+    </section>
+    <div className="settings-warning"><Icon name="shield" size={17} /><span><strong>Review deployment setup before production.</strong> Apply and verify both Supabase migrations, configure email delivery and the server-side service-role key, then validate invitations and RLS against your target project.</span><button className="text-link" onClick={() => showToast("See the Console README for deployment setup and migration steps.")}>Setup notes <Icon name="arrow" size={13} /></button></div>
+  </div>;
 }
 
 function IntegrationDialog({ integration, onClose }) {
