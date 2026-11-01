@@ -1,0 +1,8 @@
+*{box-sizing:border-box}
+html,body{min-height:100%;margin:0}
+body{background:#F3EFE6;color:#0B0B0C;font-family:var(--font-body),system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,textarea{font:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #ef681a;outline-offset:3px}
+.console-wordmark{display:inline-flex;align-items:center;gap:7px}
+.console-wordmark img{display:block;object-fit:contain}
+.console-wordmark-text{color:#0B0B0C;font-family:var(--font-jakarta),var(--font-inter),sans-serif;font-size:22px;font-weight:500;letter-spacing:-.055em;line-height:1}
